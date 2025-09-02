@@ -1,27 +1,49 @@
+// index.js
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import pkg from 'pg';
-
 const { Pool } = pkg;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) {
-  console.error('Faltou configurar DATABASE_URL no .env');
+const cn = process.env.DATABASE_URL;
+if (!cn) {
+  console.error('Faltou DATABASE_URL');
   process.exit(1);
 }
 
-// Pool com SSL habilitado (Render exige TLS)
+// Detecta se é Internal URL (Render coloca ".internal." no host)
+const isInternal = /\.internal\./i.test(cn);
+
+// Pool configurado para Internal (sem SSL)
 const pool = new Pool({
-  connectionString,
-  ssl: { rejectUnauthorized: true } // pode usar { ssl: true } também
+  connectionString: cn,
+  ssl: isInternal ? false : { rejectUnauthorized: false },
+  max: parseInt(process.env.PGPOOL_MAX || '5', 10),
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+  keepAlive: true
 });
 
-// Consulta fornecida por você
+// Log de erros no pool
+pool.on('error', (err) => {
+  console.error('Pool error:', err);
+});
+
+// Teste inicial de conexão
+(async () => {
+  try {
+    await pool.query('SELECT 1');
+    console.log('Conectado ao Postgres com sucesso.');
+  } catch (e) {
+    console.error('Falha no SELECT 1:', e);
+  }
+})();
+
+// Consulta principal
 const QUERY = `
 SELECT
   p.idproduto,
@@ -44,7 +66,7 @@ GROUP BY
 ORDER BY p.idproduto;
 `;
 
-// Healthcheck simples
+// Healthcheck
 app.get('/health', async (_req, res) => {
   try {
     await pool.query('SELECT 1');
@@ -54,11 +76,10 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-// Endpoint principal
-app.get('/produtos', async (req, res) => {
+// Endpoint de produtos
+app.get('/produtos', async (_req, res) => {
   try {
     const { rows } = await pool.query(QUERY);
-    // rows traz "anexos" como array de texto do Postgres
     res.json(rows);
   } catch (e) {
     console.error('Erro ao consultar /produtos:', e);
@@ -66,8 +87,8 @@ app.get('/produtos', async (req, res) => {
   }
 });
 
-// Inicialização
+// Inicializa servidor
 const port = Number(process.env.PORT) || 3000;
-app.listen(port, () => {
+app.listen(port, '0.0.0.0', () => {
   console.log(`API ouvindo em http://localhost:${port}`);
 });
